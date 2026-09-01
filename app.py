@@ -73,16 +73,21 @@ with st.sidebar:
     st.markdown("### Engine & Sandbox")
     api_key_input = st.text_input(
         "Groq API key (optional)", type="password",
-        value=os.environ.get("GROQ_API_KEY", ""),
+        value=st.session_state.get("groq_api_key", os.environ.get("GROQ_API_KEY", "")),
+        key="groq_key_input_box",
         help="Only needed to escalate beyond the 3 built-in local error classes. "
              "Get a free key at console.groq.com.",
     )
-    if api_key_input:
-        os.environ["GROQ_API_KEY"] = api_key_input
+    if api_key_input and api_key_input.strip():
+        clean_key = api_key_input.strip()
+        os.environ["GROQ_API_KEY"] = clean_key
+        st.session_state["groq_api_key"] = clean_key
         config.settings = config.load_settings()
 
     use_cloud = st.toggle(
-        "Escalate to cloud LLM when needed", value=False,
+        "Escalate to cloud LLM when needed",
+        value=st.session_state.get("use_cloud_llm_state", False),
+        key="use_cloud_llm_state",
         help="The local engine runs first either way. This only kicks in if it finds nothing.",
     )
 
@@ -98,7 +103,8 @@ with st.sidebar:
 
     use_test_gen = st.toggle(
         "Generate test cases (Groq)",
-        value=False,
+        value=st.session_state.get("use_test_gen_state", False),
+        key="use_test_gen_state",
         disabled=not config.settings.has_llm,
         help="Generate pytest test cases covering normal and edge cases."
         if config.settings.has_llm
@@ -180,6 +186,14 @@ def render_result(result: AnalysisResult) -> None:
             st.markdown("**Detected:** no issues found")
 
         st.info(result.explanation)
+
+        # Surface Cloud LLM status or errors if any
+        cloud_steps = [s for s in result.trace if s.name == "Cloud LLM"]
+        for cs in cloud_steps:
+            if cs.status == "warn":
+                st.warning(f"⚠️ **Cloud LLM Note:** {cs.detail}")
+            elif cs.status == "fail":
+                st.error(f"❌ **Cloud LLM Error:** {cs.detail}")
 
         tab_diff, tab_fixed, tab_sandbox, tab_trace = st.tabs([
             "Before / After", "Fixed code", "Sandbox & Tests", "Under the hood",
