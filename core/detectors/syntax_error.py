@@ -15,16 +15,26 @@ _BRACKET_PAIRS = {"(": ")", "[": "]", "{": "}"}
 
 
 def _fix_missing_colon(lines: list[str], lineno: int) -> bool:
+    changed = False
     idx = lineno - 1
-    if not (0 <= idx < len(lines)):
-        return False
-    stripped = lines[idx].rstrip()
-    head = stripped.lstrip()
-    is_block_header = any(head == kw.strip() or head.startswith(kw) for kw in _BLOCK_KEYWORDS)
-    if is_block_header and not stripped.endswith(":"):
-        lines[idx] = stripped + ":"
-        return True
-    return False
+    if 0 <= idx < len(lines):
+        stripped = lines[idx].rstrip()
+        head = stripped.lstrip()
+        is_block_header = any(head == kw.strip() or head.startswith(kw) for kw in _BLOCK_KEYWORDS)
+        if is_block_header and not stripped.endswith(":") and not stripped.endswith("\\"):
+            lines[idx] = stripped + ":"
+            changed = True
+
+    # Also sweep all other obvious block headers that are missing colons
+    for i, line in enumerate(lines):
+        stripped = line.rstrip()
+        head = stripped.lstrip()
+        is_block_header = any(head == kw.strip() or head.startswith(kw) for kw in _BLOCK_KEYWORDS)
+        if is_block_header and not stripped.endswith(":") and not stripped.endswith("\\"):
+            lines[i] = stripped + ":"
+            changed = True
+
+    return changed
 
 
 def _fix_tabs(lines: list[str]) -> bool:
