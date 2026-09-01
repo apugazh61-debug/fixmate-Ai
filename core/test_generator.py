@@ -105,7 +105,7 @@ def generate_tests(fixed_code: str, retries: int = 2) -> TestSuiteResult:
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.2,
-                max_tokens=1024,
+                max_tokens=4096,
             )
             latency = time.time() - start
             raw_content = completion.choices[0].message.content.strip()

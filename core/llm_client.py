@@ -80,12 +80,23 @@ def analyze_and_fix(
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.1,
-                max_tokens=1024,
+                max_tokens=4096,
             )
             latency = time.time() - start
             content = completion.choices[0].message.content.strip()
             content = content.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-            data = json.loads(content)
+            
+            # Robust JSON parsing
+            try:
+                data = json.loads(content)
+            except Exception:
+                import re
+                match = re.search(r"\{[\s\S]*\}", content)
+                if match:
+                    data = json.loads(match.group(0))
+                else:
+                    raise
+
             return LlmResponse(
                 fixed_code=data.get("fixed_code", code),
                 explanation=data.get("explanation", "No explanation returned."),
