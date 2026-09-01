@@ -2,7 +2,8 @@
 SQLite-based persistent analytics store for FixMate AI.
 
 Records metadata for every analysis and fix attempt. Provides aggregation
-functions for error frequency, recurring files, and verification rates.
+functions for error frequency, recurring files, verification rates,
+and user acceptance tracking for confidence calibration.
 Initializes lazily on first access.
 """
 
@@ -29,7 +30,7 @@ def _get_connection(db_path: str | Path | None = None) -> sqlite3.Connection:
 
 
 def _init_schema(conn: sqlite3.Connection) -> None:
-    """Create the analytics table if it doesn't already exist."""
+    """Create the analytics table if it doesn't already exist and migrate columns."""
     with conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS analysis_events (
@@ -41,33 +42,51 @@ def _init_schema(conn: sqlite3.Connection) -> None:
                 issue_count INTEGER DEFAULT 0,
                 verified INTEGER NOT NULL,
                 source TEXT NOT NULL,
-                attempts INTEGER NOT NULL
+                attempts INTEGER NOT NULL,
+                raw_confidence REAL DEFAULT 1.0,
+                was_accepted INTEGER DEFAULT 1
             );
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_timestamp ON analysis_events(timestamp);")
+
+        # Migrate columns if table already existed without them
+        try:
+            conn.execute("ALTER TABLE analysis_events ADD COLUMN raw_confidence REAL DEFAULT 1.0;")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            conn.execute("ALTER TABLE analysis_events ADD COLUMN was_accepted INTEGER DEFAULT 1;")
+        except sqlite3.OperationalError:
+            pass
 
 
 def record_result(
     result: AnalysisResult,
     repo_name: str = "",
     file_path: str = "",
+    was_accepted: bool = True,
     db_path: str | Path | None = None,
-) -> None:
-    """Write an AnalysisResult event to the analytics SQLite store. Never throws."""
+) -> int | None:
+    """Write an AnalysisResult event to the analytics SQLite store. Returns row id. Never throws."""
     try:
         conn = _get_connection(db_path)
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
         
-        # Extract unique error type strings
+        # Extract unique error type strings and average raw confidence
         error_types_list = [i.error_type.value for i in result.issues] if result.issues else ["none"]
         error_types_str = ",".join(sorted(set(error_types_list)))
 
+        avg_confidence = (
+            sum(i.confidence for i in result.issues) / len(result.issues)
+            if result.issues else 1.0
+        )
+
         with conn:
-            conn.execute(
+            cur = conn.execute(
                 """
                 INSERT INTO analysis_events 
-                (timestamp, repo_name, file_path, error_types, issue_count, verified, source, attempts)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (timestamp, repo_name, file_path, error_types, issue_count, verified, source, attempts, raw_confidence, was_accepted)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     now_iso,
@@ -78,11 +97,60 @@ def record_result(
                     1 if result.verified else 0,
                     result.source,
                     result.attempts,
+                    avg_confidence,
+                    1 if was_accepted else 0,
                 ),
             )
+            row_id = cur.lastrowid
         conn.close()
+        return row_id
     except Exception:  # noqa: BLE001 - analytics write must never break the main app
+        return None
+
+
+def update_acceptance(
+    event_id: int,
+    was_accepted: bool,
+    db_path: str | Path | None = None,
+) -> None:
+    """Update acceptance flag for a past result (e.g. user manually altered fix before shipping)."""
+    try:
+        conn = _get_connection(db_path)
+        with conn:
+            conn.execute(
+                "UPDATE analysis_events SET was_accepted = ? WHERE id = ?",
+                (1 if was_accepted else 0, event_id),
+            )
+        conn.close()
+    except Exception:  # noqa: BLE001
         pass
+
+
+def get_acceptance_history_for_type(
+    error_type: str,
+    limit: int = 50,
+    db_path: str | Path | None = None,
+) -> list[int]:
+    """Return list of was_accepted (1 or 0) for the last N occurrences of error_type."""
+    results: list[int] = []
+    try:
+        conn = _get_connection(db_path)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT was_accepted FROM analysis_events 
+            WHERE error_types LIKE ?
+            ORDER BY id DESC 
+            LIMIT ?
+            """,
+            (f"%{error_type}%", limit),
+        )
+        for row in cur.fetchall():
+            results.append(int(row["was_accepted"]))
+        conn.close()
+    except Exception:  # noqa: BLE001
+        pass
+    return results
 
 
 def get_summary_stats(db_path: str | Path | None = None) -> dict[str, Any]:
@@ -183,7 +251,7 @@ def get_recent_history(limit: int = 15, db_path: str | Path | None = None) -> li
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT id, timestamp, repo_name, file_path, error_types, issue_count, verified, source, attempts 
+            SELECT id, timestamp, repo_name, file_path, error_types, issue_count, verified, source, attempts, was_accepted 
             FROM analysis_events 
             ORDER BY id DESC 
             LIMIT ?
@@ -201,6 +269,7 @@ def get_recent_history(limit: int = 15, db_path: str | Path | None = None) -> li
                 "verified": bool(row["verified"]),
                 "source": row["source"],
                 "attempts": row["attempts"],
+                "was_accepted": bool(row["was_accepted"]),
             })
         conn.close()
     except Exception:  # noqa: BLE001

@@ -227,6 +227,23 @@ def handle_workflow_run_event(payload: dict[str, Any], github_token: str) -> dic
     )
 
     if result.verified:
+        # Check Pre-Merge Safety Gate
+        if result.safety_assessment and result.safety_assessment.blocks_pr:
+            reasons_str = "; ".join(result.safety_assessment.reasons)
+            comment = (
+                f"⛔ **FixMate AI Safety Gate Blocked Auto-PR** (Run #{run_id})\n\n"
+                f"A candidate fix was generated, but automatic PR creation was blocked by the safety gate:\n\n"
+                f"**Reasons:** {reasons_str}\n\n"
+                f"**Explanation of Candidate Fix:** {result.explanation}\n"
+            )
+            post_commit_comment(owner, repo, head_sha, comment, github_token)
+            mark_run_processed(run_id)
+            return {
+                "status": "safety_gate_blocked",
+                "reasons": result.safety_assessment.reasons,
+                "explanation": result.explanation,
+            }
+
         pr_res = github_integration.create_pull_request(
             repo_input=f"{owner}/{repo}",
             token=github_token,

@@ -21,8 +21,10 @@ from core import config
 from core.detectors import MissingImportDetector, SyntaxErrorDetector, UndefinedVariableDetector
 from core.models import AnalysisResult, ErrorType, Issue, PipelineStep
 from core import analytics_store
+from core import calibration
 from core import context_gatherer
 from core import llm_client
+from core import safety_gate
 from core import sandbox
 from core import test_generator
 
@@ -244,6 +246,20 @@ def run_pipeline(
                 result.trace.append(PipelineStep("Test Generator", "fail", suite.error))
 
             result.test_suite = suite
+
+    # Confidence Calibration from Real Usage History
+    if result.issues:
+        _, cal_logs = calibration.calibrate_issues(result.issues)
+        if cal_logs:
+            for log in cal_logs:
+                result.trace.append(PipelineStep("Calibration", "info", f"Confidence: {log}"))
+
+    # Safety Gate Pre-Merge Risk Assessment
+    assessment = safety_gate.assess_risk(result.original_code, result.fixed_code, file_path=file_path)
+    result.safety_assessment = assessment
+    gate_status = "fail" if assessment.blocks_pr else ("warn" if assessment.level == "medium" else "ok")
+    gate_detail = f"{assessment.summary} — {'; '.join(assessment.reasons)}"
+    result.trace.append(PipelineStep("Safety Gate", gate_status, gate_detail))
 
     # Write-through hook for team analytics (non-blocking, never throws)
     analytics_store.record_result(result, repo_name=repo_root, file_path=file_path)

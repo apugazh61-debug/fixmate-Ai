@@ -193,9 +193,19 @@ def render_result(result: AnalysisResult) -> None:
                     st.code("\n".join(diff_lines), language="diff")
 
         with tab_fixed:
-            st.code(result.fixed_code, language="python")
+            fixed_editor = st.text_area(
+                "Fixed code",
+                value=result.fixed_code,
+                height=260,
+                key="fixed_code_viewer",
+                help="You can review or fine-tune the fixed code here before downloading or opening a PR.",
+            )
+            # If user modified the code, record was_accepted=False
+            if fixed_editor != result.fixed_code and "last_analytics_id" in st.session_state and st.session_state.last_analytics_id:
+                analytics_store.update_acceptance(st.session_state.last_analytics_id, was_accepted=False)
+
             st.download_button(
-                "⬇ Download fixed_code.py", data=result.fixed_code,
+                "⬇ Download fixed_code.py", data=fixed_editor,
                 file_name="fixed_code.py", mime="text/x-python", use_container_width=True,
             )
 
@@ -245,6 +255,17 @@ def render_result(result: AnalysisResult) -> None:
         st.divider()
         with st.expander("🚀 Ship it — Open GitHub Pull Request", expanded=False):
             st.caption("Directly commit the fixed code to a new branch and open a PR back to the default branch.")
+
+            # Safety Assessment Banner
+            if result.safety_assessment:
+                sa = result.safety_assessment
+                sa_badge = "🔴 High Risk (Blocked)" if sa.blocks_pr else ("🟡 Medium Risk" if sa.level == "medium" else "🟢 Low Risk (Safe)")
+                st.markdown(f"**Safety Gate:** `{sa_badge}` — Blast radius: {int(sa.blast_radius_score * 100)}%")
+                if sa.blocks_pr:
+                    st.error(f"⛔ **Auto-PR is Blocked by Safety Gate:** {'; '.join(sa.reasons)}")
+                elif sa.level == "medium":
+                    st.warning(f"⚠️ **Safety Gate Warning:** {'; '.join(sa.reasons)}")
+
             c_repo, c_tok = st.columns([1, 1])
             with c_repo:
                 repo_url = st.text_input(
@@ -266,17 +287,25 @@ def render_result(result: AnalysisResult) -> None:
                 help="Path where the fixed code will be committed in the new branch.",
             )
 
-            pr_button_disabled = not result.verified
-            pr_button_help = "" if result.verified else "Fix must be verified before opening a Pull Request."
+            is_blocked = bool(result.safety_assessment and result.safety_assessment.blocks_pr)
+            pr_button_disabled = not result.verified or is_blocked
+            if is_blocked:
+                pr_button_help = "Pull Request blocked by Safety Gate."
+            elif not result.verified:
+                pr_button_help = "Fix must be verified before opening a Pull Request."
+            else:
+                pr_button_help = "Open automated PR on GitHub"
+
             if st.button("🚀 Open Pull Request", type="primary", disabled=pr_button_disabled, help=pr_button_help, use_container_width=True):
                 st.session_state.github_repo = repo_url
                 st.session_state.github_token = token_input
+                code_to_ship = st.session_state.get("fixed_code_viewer", result.fixed_code)
                 with st.spinner("Creating branch, committing file, and opening PR on GitHub..."):
                     pr_result = github_integration.create_pull_request(
                         repo_input=repo_url,
                         token=token_input,
                         file_path=file_path_input,
-                        fixed_code=result.fixed_code,
+                        fixed_code=code_to_ship,
                         explanation=result.explanation,
                         trace=result.trace,
                     )

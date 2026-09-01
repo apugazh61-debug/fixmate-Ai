@@ -1,0 +1,53 @@
+{
+  "name": "fixmate-ai",
+  "displayName": "FixMate AI — Real-time Code Repair",
+  "description": "Sub-second offline AI code diagnostics and 1-click Quick Fixes for Python.",
+  "version": "1.0.0",
+  "publisher": "FixMateAI",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Linters",
+    "Programming Languages",
+    "Education"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:python"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "fixmate.analyzeCurrentFile",
+        "title": "FixMate AI: Analyze & Fix Current File"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "FixMate AI Configuration",
+      "properties": {
+        "fixmate.serverUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:8000",
+          "description": "URL of the local FixMate backend service."
+        },
+        "fixmate.analyzeOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically analyze and generate diagnostics on file save."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.0.0"
+  }
+}

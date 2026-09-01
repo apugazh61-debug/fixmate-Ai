@@ -58,5 +58,6 @@ class AnalysisResult:
     attempts: int
     trace: list[PipelineStep] = field(default_factory=list)
     source: str = "local_engine"
-    sandbox_result: Any = None  # VerificationResult | None
-    test_suite: Any = None      # TestSuiteResult | None
+    sandbox_result: Any = None     # VerificationResult | None
+    test_suite: Any = None         # TestSuiteResult | None
+    safety_assessment: Any = None  # RiskAssessment | None

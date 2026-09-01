@@ -1,5 +1,10 @@
 """
-FastAPI entrypoint for FixMate AI GitHub CI Webhook.
+FastAPI entrypoint for FixMate AI GitHub CI Webhook & VS Code Extension.
+
+Endpoints:
+- POST /webhook/github: Autonomous GitHub Actions failure webhook trigger.
+- POST /analyze/inline: Sub-second offline diagnostic endpoint for VS Code.
+- GET  /health: Health check.
 
 Run with:
     uvicorn webhook_app:app --port 8000
@@ -12,20 +17,58 @@ import os
 from typing import Any
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response, status
+from pydantic import BaseModel
 
+from core.engine import run_local_pipeline
 from core import webhook_listener
 
 app = FastAPI(
-    title="FixMate AI CI Webhook Service",
-    description="Autonomous CI webhook listener for automated Python bug repairs.",
+    title="FixMate AI CI & IDE Service",
+    description="Autonomous CI webhook listener and IDE real-time analysis backend.",
     version="1.0.0",
 )
 
 
+class InlineAnalyzeRequest(BaseModel):
+    code: str
+    file_path: str = ""
+
+
 @app.get("/")
 @app.get("/health")
-def health_check() -> dict[str, str]:
-    return {"status": "ok", "service": "FixMate AI Webhook Listener"}
+def health_check() -> dict[str, Any]:
+    return {"status": "ok", "service": "FixMate AI Service", "offline_ready": True}
+
+
+@app.post("/analyze/inline")
+def analyze_inline(req: InlineAnalyzeRequest) -> dict[str, Any]:
+    """Lightweight, sub-second local analysis endpoint used by the VS Code extension."""
+    result = run_local_pipeline(req.code)
+    return {
+        "verified": result.verified,
+        "fixed_code": result.fixed_code,
+        "explanation": result.explanation,
+        "attempts": result.attempts,
+        "source": result.source,
+        "issues": [
+            {
+                "error_type": i.error_type.value,
+                "line": i.line,
+                "message": i.message,
+                "detail": i.detail,
+                "confidence": i.confidence,
+            }
+            for i in result.issues
+        ],
+        "trace": [
+            {
+                "name": s.name,
+                "status": s.status,
+                "detail": s.detail,
+            }
+            for s in result.trace
+        ],
+    }
 
 
 @app.post("/webhook/github")
