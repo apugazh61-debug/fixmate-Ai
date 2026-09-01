@@ -7,18 +7,27 @@ end (detect -> fix), the engine loops detect -> fix -> re-verify until the
 code parses clean or it runs out of attempts, and every step is logged to
 a `trace` so the UI can show its work like a live agent log.
 
+Supports multi-language error detection and automated repair (Python & JavaScript).
+
 If a Groq API key is configured and the caller opts in, the engine can also
 hand off to the cloud LLM — either as the primary analyzer, or as a
 fallback when the local detectors come up empty (i.e. the bug is outside
-the three classes the offline engine understands).
+the known classes the offline engine understands).
 """
 
 from __future__ import annotations
 
 import ast
+import re
 
 from core import config
 from core.detectors import MissingImportDetector, SyntaxErrorDetector, UndefinedVariableDetector
+from core.detectors.javascript import (
+    JsMissingImportDetector,
+    JsSyntaxErrorDetector,
+    JsUndefinedVariableDetector,
+    is_node_available,
+)
 from core.models import AnalysisResult, ErrorType, Issue, PipelineStep
 from core import analytics_store
 from core import calibration
@@ -29,7 +38,23 @@ from core import sandbox
 from core import test_generator
 
 
-def _parses(code: str) -> bool:
+def detect_language(code: str, file_path: str = "") -> str:
+    """Detect whether snippet is Python or JavaScript."""
+    if file_path:
+        ext = file_path.lower()
+        if ext.endswith((".js", ".jsx", ".mjs", ".ts", ".tsx")):
+            return "javascript"
+        if ext.endswith((".py", ".pyw")):
+            return "python"
+
+    # Heuristic detection from code tokens
+    js_score = len(re.findall(r'\b(const|let|var|function|console\.log|require|export|import\s+.*from)\b|=>|===|!==', code))
+    py_score = len(re.findall(r'\b(def|import|from|elif|print|self|__init__|None|True|False)\b|:\s*$', code, flags=re.MULTILINE))
+
+    return "javascript" if js_score > py_score else "python"
+
+
+def _parses_python(code: str) -> bool:
     try:
         ast.parse(code)
         return True
@@ -37,9 +62,28 @@ def _parses(code: str) -> bool:
         return False
 
 
-def _summarize(issues: list[Issue]) -> str:
+def _parses_javascript(code: str) -> bool:
+    """Validate JS syntax using node --check or bracket balancing."""
+    if is_node_available():
+        from core.detectors.javascript.syntax_error import check_node_syntax
+        valid, _, _ = check_node_syntax(code)
+        return valid
+
+    # Fallback bracket balance check
+    stack = []
+    brackets = {"(": ")", "{": "}", "[": "]"}
+    for char in code:
+        if char in brackets:
+            stack.append(brackets[char])
+        elif char in brackets.values():
+            if not stack or stack.pop() != char:
+                return False
+    return len(stack) == 0
+
+
+def _summarize(issues: list[Issue], language: str = "python") -> str:
     if not issues:
-        return "No issues found by the local engine."
+        return f"No issues found by the {language} local engine."
     by_type: dict[ErrorType, list[Issue]] = {}
     for issue in issues:
         by_type.setdefault(issue.error_type, []).append(issue)
@@ -57,17 +101,84 @@ def _summarize(issues: list[Issue]) -> str:
     return "Found " + ", ".join(parts) + "."
 
 
-def run_local_pipeline(code: str, max_attempts: int | None = None) -> AnalysisResult:
+def run_local_pipeline(
+    code: str,
+    max_attempts: int | None = None,
+    language: str | None = None,
+    file_path: str = "",
+) -> AnalysisResult:
     """Offline, deterministic pipeline. No network calls, no API key needed."""
     max_attempts = max_attempts or config.settings.max_fix_attempts
+    lang = language or detect_language(code, file_path=file_path)
+
     trace: list[PipelineStep] = [
-        PipelineStep("Detect", "info", "Scanning with 3 local detectors: syntax, imports, undefined names."),
+        PipelineStep("Detect", "info", f"Scanning with local {lang.title()} detectors (syntax, imports, undefined names)."),
     ]
 
     current = code
     all_issues: list[Issue] = []
     attempt = 0
 
+    if lang == "javascript":
+        for attempt in range(1, max_attempts + 1):
+            syn_detector = JsSyntaxErrorDetector()
+            syntax_issues = syn_detector.detect(current)
+            if syntax_issues:
+                all_issues.extend(syntax_issues)
+                trace.append(PipelineStep(
+                    f"Attempt {attempt} · JS Syntax scan", "warn",
+                    f"Line {syntax_issues[0].line}: {syntax_issues[0].message}",
+                ))
+                fixed = syn_detector.fix(current, syntax_issues)
+                current = fixed.fixed_code
+                trace.append(PipelineStep(
+                    f"Attempt {attempt} · Repair JS syntax",
+                    "ok" if _parses_javascript(current) else "warn",
+                    fixed.explanation,
+                ))
+                continue
+
+            mi_detector = JsMissingImportDetector()
+            uv_detector = JsUndefinedVariableDetector()
+            mi_issues = mi_detector.detect(current)
+            uv_issues = uv_detector.detect(current)
+
+            if not mi_issues and not uv_issues:
+                trace.append(PipelineStep("Verify", "ok", "JavaScript code parses cleanly and no known issue patterns remain."))
+                break
+
+            if mi_issues:
+                all_issues.extend(mi_issues)
+                fixed = mi_detector.fix(current, mi_issues)
+                current = fixed.fixed_code
+                trace.append(PipelineStep(f"Attempt {attempt} · Add missing module requires", "ok", fixed.explanation))
+
+            if uv_issues:
+                all_issues.extend(uv_issues)
+                fixed = uv_detector.fix(current, uv_issues)
+                current = fixed.fixed_code
+                trace.append(PipelineStep(f"Attempt {attempt} · Rename undefined JS variables", "ok", fixed.explanation))
+        else:
+            trace.append(PipelineStep("Verify", "warn", f"Stopped after {max_attempts} attempts."))
+
+        verified = _parses_javascript(current)
+        trace.append(PipelineStep(
+            "Final check", "ok" if verified else "fail",
+            "JavaScript validation succeeds on the fixed code." if verified else "The fixed code still has syntax flaws.",
+        ))
+
+        return AnalysisResult(
+            original_code=code,
+            fixed_code=current,
+            issues=all_issues,
+            explanation=_summarize(all_issues, language="JavaScript"),
+            verified=verified,
+            attempts=attempt,
+            trace=trace,
+            source="local_engine_js",
+        )
+
+    # Standard Python pipeline
     for attempt in range(1, max_attempts + 1):
         syntax_issues = SyntaxErrorDetector().detect(current)
         if syntax_issues:
@@ -80,7 +191,7 @@ def run_local_pipeline(code: str, max_attempts: int | None = None) -> AnalysisRe
             current = fixed.fixed_code
             trace.append(PipelineStep(
                 f"Attempt {attempt} · Repair syntax",
-                "ok" if _parses(current) else "warn",
+                "ok" if _parses_python(current) else "warn",
                 fixed.explanation,
             ))
             continue  # code changed shape — re-run the whole scan from the top
@@ -106,7 +217,7 @@ def run_local_pipeline(code: str, max_attempts: int | None = None) -> AnalysisRe
     else:
         trace.append(PipelineStep("Verify", "warn", f"Stopped after {max_attempts} attempts."))
 
-    verified = _parses(current)
+    verified = _parses_python(current)
     trace.append(PipelineStep(
         "Final check", "ok" if verified else "fail",
         "ast.parse() succeeds on the fixed code." if verified else "The fixed code still fails to parse.",
@@ -116,7 +227,7 @@ def run_local_pipeline(code: str, max_attempts: int | None = None) -> AnalysisRe
         original_code=code,
         fixed_code=current,
         issues=all_issues,
-        explanation=_summarize(all_issues),
+        explanation=_summarize(all_issues, language="Python"),
         verified=verified,
         attempts=attempt,
         trace=trace,
@@ -132,14 +243,16 @@ def run_pipeline(
     generate_tests: bool = False,
     file_path: str = "",
     repo_root: str = "",
+    language: str | None = None,
 ) -> AnalysisResult:
     """Public entry point. Runs the local engine first; optionally escalates
     to the Groq cloud LLM either by user choice, or automatically when the
-    local engine finds nothing (the bug may be outside its 3 known classes).
+    local engine finds nothing (the bug may be outside its known classes).
 
     Optionally runs sandboxed container verification and automated test generation.
     """
-    result = run_local_pipeline(code)
+    lang = language or detect_language(code, file_path=file_path)
+    result = run_local_pipeline(code, language=lang, file_path=file_path)
 
     should_escalate = use_cloud_llm and (not result.issues or not result.verified)
     if use_cloud_llm:
@@ -166,7 +279,7 @@ def run_pipeline(
 
             try:
                 llm_result = llm_client.analyze_and_fix(code, error_message, extra_context=extra_context)
-                verified = _parses(llm_result.fixed_code)
+                verified = _parses_python(llm_result.fixed_code) if lang == "python" else _parses_javascript(llm_result.fixed_code)
                 result.trace.append(PipelineStep(
                     "Cloud LLM", "ok" if verified else "warn",
                     f"Groq responded in {llm_result.raw_latency_s:.2f}s.",
@@ -176,7 +289,7 @@ def run_pipeline(
                     fixed_code=llm_result.fixed_code,
                     issues=result.issues or [Issue(
                         error_type=ErrorType.UNKNOWN, line=None,
-                        message="Detected by cloud LLM (outside local engine's 3 known classes).",
+                        message="Detected by cloud LLM (outside local engine's known classes).",
                     )],
                     explanation=llm_result.explanation,
                     verified=verified,
@@ -187,8 +300,8 @@ def run_pipeline(
             except llm_client.LlmUnavailable as exc:
                 result.trace.append(PipelineStep("Cloud LLM", "fail", str(exc)))
 
-    # Optional stage: Sandboxed verification in Docker
-    if verify_in_sandbox:
+    # Optional stage: Sandboxed verification in Docker (for Python)
+    if verify_in_sandbox and lang == "python":
         if not sandbox.is_available():
             _, reason = sandbox.get_availability_status()
             result.trace.append(PipelineStep("Sandbox Verify", "warn", f"Docker unavailable: {reason}"))
@@ -210,8 +323,8 @@ def run_pipeline(
                 detail = f"After: failed inside container ({v_res.after_output[:60]}...)" if len(v_res.after_output) > 60 else f"After: failed ({v_res.after_output})"
                 result.trace.append(PipelineStep("Sandbox Verify", "fail", detail))
 
-    # Optional stage: Automated Test Generation
-    if generate_tests:
+    # Optional stage: Automated Test Generation (for Python)
+    if generate_tests and lang == "python":
         if not test_generator.is_available():
             result.trace.append(PipelineStep(
                 "Test Generator", "info",
@@ -254,12 +367,13 @@ def run_pipeline(
             for log in cal_logs:
                 result.trace.append(PipelineStep("Calibration", "info", f"Confidence: {log}"))
 
-    # Safety Gate Pre-Merge Risk Assessment
-    assessment = safety_gate.assess_risk(result.original_code, result.fixed_code, file_path=file_path)
-    result.safety_assessment = assessment
-    gate_status = "fail" if assessment.blocks_pr else ("warn" if assessment.level == "medium" else "ok")
-    gate_detail = f"{assessment.summary} — {'; '.join(assessment.reasons)}"
-    result.trace.append(PipelineStep("Safety Gate", gate_status, gate_detail))
+    # Safety Gate Pre-Merge Risk Assessment (for Python)
+    if lang == "python":
+        assessment = safety_gate.assess_risk(result.original_code, result.fixed_code, file_path=file_path)
+        result.safety_assessment = assessment
+        gate_status = "fail" if assessment.blocks_pr else ("warn" if assessment.level == "medium" else "ok")
+        gate_detail = f"{assessment.summary} — {'; '.join(assessment.reasons)}"
+        result.trace.append(PipelineStep("Safety Gate", gate_status, gate_detail))
 
     # Write-through hook for team analytics (non-blocking, never throws)
     analytics_store.record_result(result, repo_name=repo_root, file_path=file_path)

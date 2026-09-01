@@ -1,0 +1,95 @@
+{
+  "FixMate Local Only": {
+    "total_evaluated": 70,
+    "verified_count": 69,
+    "verified_rate": 98.6,
+    "exact_count": 48,
+    "exact_rate": 68.6,
+    "mean_latency_s": 0.0473,
+    "cost_per_1k_fixes": 0.0,
+    "by_class": {
+      "missing_import": {
+        "count": 18,
+        "verified_count": 18,
+        "verified_rate": 100.0
+      },
+      "syntax_error": {
+        "count": 18,
+        "verified_count": 17,
+        "verified_rate": 94.4
+      },
+      "undefined_variable": {
+        "count": 18,
+        "verified_count": 18,
+        "verified_rate": 100.0
+      },
+      "out_of_distribution": {
+        "count": 16,
+        "verified_count": 16,
+        "verified_rate": 100.0
+      }
+    }
+  },
+  "FixMate Hybrid": {
+    "total_evaluated": 70,
+    "verified_count": 69,
+    "verified_rate": 98.6,
+    "exact_count": 48,
+    "exact_rate": 68.6,
+    "mean_latency_s": 0.9853,
+    "cost_per_1k_fixes": 0.0,
+    "by_class": {
+      "missing_import": {
+        "count": 18,
+        "verified_count": 18,
+        "verified_rate": 100.0
+      },
+      "syntax_error": {
+        "count": 18,
+        "verified_count": 17,
+        "verified_rate": 94.4
+      },
+      "undefined_variable": {
+        "count": 18,
+        "verified_count": 18,
+        "verified_rate": 100.0
+      },
+      "out_of_distribution": {
+        "count": 16,
+        "verified_count": 16,
+        "verified_rate": 100.0
+      }
+    }
+  },
+  "Naive LLM Baseline": {
+    "total_evaluated": 70,
+    "verified_count": 0,
+    "verified_rate": 0.0,
+    "exact_count": 0,
+    "exact_rate": 0.0,
+    "mean_latency_s": 0.001,
+    "cost_per_1k_fixes": 0.15,
+    "by_class": {
+      "missing_import": {
+        "count": 18,
+        "verified_count": 0,
+        "verified_rate": 0.0
+      },
+      "syntax_error": {
+        "count": 18,
+        "verified_count": 0,
+        "verified_rate": 0.0
+      },
+      "undefined_variable": {
+        "count": 18,
+        "verified_count": 0,
+        "verified_rate": 0.0
+      },
+      "out_of_distribution": {
+        "count": 16,
+        "verified_count": 0,
+        "verified_rate": 0.0
+      }
+    }
+  }
+}
