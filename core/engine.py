@@ -20,6 +20,8 @@ import ast
 from core import config
 from core.detectors import MissingImportDetector, SyntaxErrorDetector, UndefinedVariableDetector
 from core.models import AnalysisResult, ErrorType, Issue, PipelineStep
+from core import analytics_store
+from core import context_gatherer
 from core import llm_client
 from core import sandbox
 from core import test_generator
@@ -126,6 +128,8 @@ def run_pipeline(
     error_message: str = "",
     verify_in_sandbox: bool = False,
     generate_tests: bool = False,
+    file_path: str = "",
+    repo_root: str = "",
 ) -> AnalysisResult:
     """Public entry point. Runs the local engine first; optionally escalates
     to the Groq cloud LLM either by user choice, or automatically when the
@@ -148,8 +152,18 @@ def run_pipeline(
             ))
         else:
             result.trace.append(PipelineStep("Cloud LLM", "info", f"Escalating to Groq ({config.settings.groq_model})..."))
+            extra_context = ""
+            if file_path and repo_root:
+                gathered = context_gatherer.gather_context(repo_root=repo_root, file_path=file_path, code=code)
+                if gathered.files:
+                    extra_context = gathered.bundled_text
+                    result.trace.append(PipelineStep(
+                        "Context Gatherer", "ok",
+                        f"Included {len(gathered.files)} sibling file(s) ({gathered.total_lines} lines).",
+                    ))
+
             try:
-                llm_result = llm_client.analyze_and_fix(code, error_message)
+                llm_result = llm_client.analyze_and_fix(code, error_message, extra_context=extra_context)
                 verified = _parses(llm_result.fixed_code)
                 result.trace.append(PipelineStep(
                     "Cloud LLM", "ok" if verified else "warn",
@@ -230,5 +244,8 @@ def run_pipeline(
                 result.trace.append(PipelineStep("Test Generator", "fail", suite.error))
 
             result.test_suite = suite
+
+    # Write-through hook for team analytics (non-blocking, never throws)
+    analytics_store.record_result(result, repo_name=repo_root, file_path=file_path)
 
     return result

@@ -48,14 +48,26 @@ def is_available() -> bool:
     return _GROQ_AVAILABLE and config.settings.has_llm
 
 
-def analyze_and_fix(code: str, error_message: str = "", retries: int = 2) -> LlmResponse:
+def analyze_and_fix(
+    code: str,
+    error_message: str = "",
+    extra_context: str = "",
+    retries: int = 2,
+) -> LlmResponse:
     if not _GROQ_AVAILABLE:
         raise LlmUnavailable("The `groq` package isn't installed. Run: pip install groq")
     if not config.settings.has_llm:
         raise LlmUnavailable("No GROQ_API_KEY configured — add one in the sidebar or your environment.")
 
     client = Groq(api_key=config.settings.groq_api_key)
-    user_prompt = f"CODE:\n{code}\n\nERROR MESSAGE (if any):\n{error_message or '(none provided)'}"
+    prompt_parts = [
+        f"CODE:\n{code}\n",
+        f"ERROR MESSAGE (if any):\n{error_message or '(none provided)'}\n",
+    ]
+    if extra_context and extra_context.strip():
+        prompt_parts.append(f"ADDITIONAL PROJECT SIBLING CONTEXT:\n{extra_context}\n")
+
+    user_prompt = "\n".join(prompt_parts)
 
     last_err: Exception | None = None
     for attempt in range(1, retries + 1):
