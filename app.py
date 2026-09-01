@@ -49,13 +49,24 @@ with st.sidebar:
     st.caption("Paste broken code. Get fixed code back — instantly.")
 
     st.markdown("### Example snippets")
+    def _on_example_change():
+        choice = st.session_state.get("example_choice_dropdown")
+        if choice and choice != "— none —" and choice in EXAMPLES:
+            st.session_state.code_input = EXAMPLES[choice]
+            st.session_state.code_editor = EXAMPLES[choice]
+
     example_choice = st.selectbox(
-        "Load a broken snippet", options=["— none —"] + list(EXAMPLES.keys()), index=1,
+        "Load a broken snippet",
+        options=["— none —"] + list(EXAMPLES.keys()),
+        index=0,
+        key="example_choice_dropdown",
+        on_change=_on_example_change,
         label_visibility="collapsed",
     )
-    if example_choice != "— none —":
-        if st.button("Load example", use_container_width=True):
+    if example_choice and example_choice != "— none —":
+        if st.button("🔄 Reload snippet", use_container_width=True):
             st.session_state.code_input = EXAMPLES[example_choice]
+            st.session_state.code_editor = EXAMPLES[example_choice]
             st.rerun()
 
     st.divider()
