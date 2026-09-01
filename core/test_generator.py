@@ -94,48 +94,70 @@ def generate_tests(fixed_code: str, retries: int = 2) -> TestSuiteResult:
     client = Groq(api_key=config.settings.groq_api_key)
     user_prompt = f"FIXED PYTHON CODE:\n{fixed_code}"
 
+    candidate_models = [
+        config.settings.groq_model,
+        "llama-3.1-8b-instant",
+        "llama-3.1-70b-versatile",
+        "llama3-8b-8192",
+        "llama3-70b-8192",
+        "mixtral-8x7b-32768",
+    ]
+    models_to_try = list(dict.fromkeys(candidate_models))
+
     last_err: Exception | None = None
-    for _ in range(retries):
-        start = time.time()
-        try:
-            completion = client.chat.completions.create(
-                model=config.settings.groq_model,
-                messages=[
-                    {"role": "system", "content": TEST_GEN_SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0.2,
-                max_tokens=4096,
-            )
-            latency = time.time() - start
-            raw_content = completion.choices[0].message.content.strip()
-            clean_json = (
-                raw_content.removeprefix("```json")
-                .removeprefix("```")
-                .removesuffix("```")
-                .strip()
-            )
-            data = json.loads(clean_json)
+    for model_name in models_to_try:
+        for _ in range(retries):
+            start = time.time()
+            try:
+                completion = client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": TEST_GEN_SYSTEM_PROMPT},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    temperature=0.2,
+                    max_tokens=4096,
+                )
+                latency = time.time() - start
+                raw_content = completion.choices[0].message.content.strip()
+                clean_json = (
+                    raw_content.removeprefix("```json")
+                    .removeprefix("```")
+                    .removesuffix("```")
+                    .strip()
+                )
+                try:
+                    data = json.loads(clean_json)
+                except Exception:
+                    import re
+                    match = re.search(r"\{[\s\S]*\}", clean_json)
+                    if match:
+                        data = json.loads(match.group(0))
+                    else:
+                        raise
 
-            test_code = data.get("test_code", "")
-            raw_tests = data.get("tests", [])
+                test_code = data.get("test_code", "")
+                raw_tests = data.get("tests", [])
 
-            cases: list[TestCaseResult] = []
-            for item in raw_tests:
-                cases.append(TestCaseResult(
-                    name=item.get("name", "test_case"),
-                    description=item.get("description", ""),
-                    code=item.get("code", ""),
-                ))
+                cases: list[TestCaseResult] = []
+                for item in raw_tests:
+                    cases.append(TestCaseResult(
+                        name=item.get("name", "test_case"),
+                        description=item.get("description", ""),
+                        code=item.get("code", ""),
+                    ))
 
-            return TestSuiteResult(
-                test_code=test_code,
-                cases=cases,
-                latency_s=latency,
-            )
-        except Exception as exc:  # noqa: BLE001
-            last_err = exc
-            continue
+                return TestSuiteResult(
+                    test_code=test_code,
+                    cases=cases,
+                    latency_s=latency,
+                )
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                err_str = str(exc).lower()
+                if "model_not_found" in err_str or "does not exist" in err_str or "404" in err_str:
+                    break
+                continue
 
     return TestSuiteResult(
         test_code="",

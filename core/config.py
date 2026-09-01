@@ -27,7 +27,7 @@ class Settings:
 def load_settings() -> Settings:
     return Settings(
         groq_api_key=os.environ.get("GROQ_API_KEY"),
-        groq_model=os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile"),
+        groq_model=os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant"),
         max_fix_attempts=int(os.environ.get("FIXMATE_MAX_ATTEMPTS", "3")),
     )
 

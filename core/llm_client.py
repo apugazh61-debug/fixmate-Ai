@@ -69,42 +69,56 @@ def analyze_and_fix(
 
     user_prompt = "\n".join(prompt_parts)
 
-    last_err: Exception | None = None
-    for attempt in range(1, retries + 1):
-        start = time.time()
-        try:
-            completion = client.chat.completions.create(
-                model=config.settings.groq_model,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0.1,
-                max_tokens=4096,
-            )
-            latency = time.time() - start
-            content = completion.choices[0].message.content.strip()
-            content = content.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-            
-            # Robust JSON parsing
-            try:
-                data = json.loads(content)
-            except Exception:
-                import re
-                match = re.search(r"\{[\s\S]*\}", content)
-                if match:
-                    data = json.loads(match.group(0))
-                else:
-                    raise
+    candidate_models = [
+        config.settings.groq_model,
+        "llama-3.1-8b-instant",
+        "llama-3.1-70b-versatile",
+        "llama3-8b-8192",
+        "llama3-70b-8192",
+        "mixtral-8x7b-32768",
+    ]
+    models_to_try = list(dict.fromkeys(candidate_models))
 
-            return LlmResponse(
-                fixed_code=data.get("fixed_code", code),
-                explanation=data.get("explanation", "No explanation returned."),
-                error_type=data.get("error_type", "other"),
-                raw_latency_s=latency,
-            )
-        except Exception as exc:  # noqa: BLE001 - surfaced to the caller as LlmUnavailable
-            last_err = exc
-            continue
+    last_err: Exception | None = None
+    for model_name in models_to_try:
+        for attempt in range(1, retries + 1):
+            start = time.time()
+            try:
+                completion = client.chat.completions.create(
+                    model=model_name,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    temperature=0.1,
+                    max_tokens=4096,
+                )
+                latency = time.time() - start
+                content = completion.choices[0].message.content.strip()
+                content = content.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+                
+                # Robust JSON parsing
+                try:
+                    data = json.loads(content)
+                except Exception:
+                    import re
+                    match = re.search(r"\{[\s\S]*\}", content)
+                    if match:
+                        data = json.loads(match.group(0))
+                    else:
+                        raise
+
+                return LlmResponse(
+                    fixed_code=data.get("fixed_code", code),
+                    explanation=data.get("explanation", "No explanation returned."),
+                    error_type=data.get("error_type", "other"),
+                    raw_latency_s=latency,
+                )
+            except Exception as exc:  # noqa: BLE001
+                last_err = exc
+                err_str = str(exc).lower()
+                if "model_not_found" in err_str or "does not exist" in err_str or "404" in err_str:
+                    break  # try next model in candidate_models
+                continue
 
     raise LlmUnavailable(f"Groq API call failed after {retries} attempts: {last_err}")
