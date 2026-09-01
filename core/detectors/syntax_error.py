@@ -37,16 +37,34 @@ def _fix_tabs(lines: list[str]) -> bool:
 
 
 def _fix_unbalanced_brackets(lines: list[str]) -> bool:
+    changed = False
+    # 1. First attempt to close unclosed brackets on the specific lines where they were opened
+    for i, line in enumerate(lines):
+        stack: list[str] = []
+        for ch in line:
+            if ch in _BRACKET_PAIRS:
+                stack.append(_BRACKET_PAIRS[ch])
+            elif ch in _BRACKET_PAIRS.values():
+                if stack and stack[-1] == ch:
+                    stack.pop()
+        if stack:
+            lines[i] = line + "".join(reversed(stack))
+            changed = True
+
+    if changed:
+        return True
+
+    # 2. Fallback: file-level bracket balance
     text = "\n".join(lines)
-    stack: list[str] = []
+    stack_global: list[str] = []
     for ch in text:
         if ch in _BRACKET_PAIRS:
-            stack.append(_BRACKET_PAIRS[ch])
+            stack_global.append(_BRACKET_PAIRS[ch])
         elif ch in _BRACKET_PAIRS.values():
-            if stack and stack[-1] == ch:
-                stack.pop()
-    if stack:
-        lines.append("".join(reversed(stack)))
+            if stack_global and stack_global[-1] == ch:
+                stack_global.pop()
+    if stack_global and lines:
+        lines[-1] = lines[-1] + "".join(reversed(stack_global))
         return True
     return False
 
