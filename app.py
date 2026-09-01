@@ -17,6 +17,9 @@ import os
 import streamlit as st
 
 from core import config
+from core import github_integration
+from core import sandbox
+from core import test_generator
 from core.engine import run_pipeline
 from core.models import AnalysisResult
 from examples import EXAMPLES
@@ -33,6 +36,12 @@ if "history" not in st.session_state:
     st.session_state.history = []  # list[AnalysisResult]
 if "code_input" not in st.session_state:
     st.session_state.code_input = EXAMPLES["Undefined variable (typo)"]
+if "github_repo" not in st.session_state:
+    st.session_state.github_repo = "https://github.com/apugazh61-debug/fixmate-Ai"
+if "github_token" not in st.session_state:
+    st.session_state.github_token = ""
+if "pr_result" not in st.session_state:
+    st.session_state.pr_result = None
 
 # ---------------------------------------------------------------- sidebar --
 with st.sidebar:
@@ -50,7 +59,7 @@ with st.sidebar:
             st.rerun()
 
     st.divider()
-    st.markdown("### Engine")
+    st.markdown("### Engine & Sandbox")
     api_key_input = st.text_input(
         "Groq API key (optional)", type="password",
         value=os.environ.get("GROQ_API_KEY", ""),
@@ -66,8 +75,28 @@ with st.sidebar:
         help="The local engine runs first either way. This only kicks in if it finds nothing.",
     )
 
+    docker_available, docker_reason = sandbox.get_availability_status()
+    use_sandbox = st.toggle(
+        "Verify in sandbox (Docker)",
+        value=False,
+        disabled=not docker_available,
+        help="Run code inside an isolated python:3.12-slim container."
+        if docker_available
+        else f"Docker unavailable: {docker_reason}",
+    )
+
+    use_test_gen = st.toggle(
+        "Generate test cases (Groq)",
+        value=False,
+        disabled=not config.settings.has_llm,
+        help="Generate pytest test cases covering normal and edge cases."
+        if config.settings.has_llm
+        else "Requires Groq API key.",
+    )
+
     engine_status = "🟢 Groq configured" if config.settings.has_llm else "⚪ Local engine only (offline)"
-    st.caption(engine_status)
+    sandbox_status = "🟢 Docker available" if docker_available else "⚪ Docker unavailable"
+    st.caption(f"{engine_status}  ·  {sandbox_status}")
 
     st.divider()
     st.markdown("### What FixMate catches (offline)")
@@ -115,9 +144,16 @@ if run_clicked and not code_input.strip():
 elif run_clicked and code_input.strip():
     st.session_state.code_input = code_input
     with st.spinner("Running detect → fix → verify pipeline..."):
-        result: AnalysisResult = run_pipeline(code_input, use_cloud_llm=use_cloud, error_message=error_message)
+        result: AnalysisResult = run_pipeline(
+            code_input,
+            use_cloud_llm=use_cloud,
+            error_message=error_message,
+            verify_in_sandbox=use_sandbox,
+            generate_tests=use_test_gen,
+        )
     st.session_state.history.append(result)
     st.session_state.last_result = result
+    st.session_state.pr_result = None
 
 # ---------------------------------------------------------------- render --
 def render_result(result: AnalysisResult) -> None:
@@ -134,7 +170,9 @@ def render_result(result: AnalysisResult) -> None:
 
         st.info(result.explanation)
 
-        tab_diff, tab_fixed, tab_trace = st.tabs(["Before / After", "Fixed code", "Under the hood"])
+        tab_diff, tab_fixed, tab_sandbox, tab_trace = st.tabs([
+            "Before / After", "Fixed code", "Sandbox & Tests", "Under the hood",
+        ])
 
         with tab_diff:
             d1, d2 = st.columns(2)
@@ -161,10 +199,95 @@ def render_result(result: AnalysisResult) -> None:
                 file_name="fixed_code.py", mime="text/x-python", use_container_width=True,
             )
 
+        with tab_sandbox:
+            st.markdown("##### 🐳 Docker Sandbox Verification")
+            if result.sandbox_result:
+                sr = result.sandbox_result
+                if sr.runs_executed:
+                    s1, s2 = st.columns(2)
+                    with s1:
+                        st.markdown(f"**Before:** {'🟢 Clean Run' if sr.before_ok else '🔴 Crashed / Error'}")
+                        st.code(sr.before_output or "(no output)", language="text")
+                    with s2:
+                        st.markdown(f"**After:** {'🟢 Clean Run' if sr.after_ok else '🔴 Crashed / Error'}")
+                        st.code(sr.after_output or "(no output)", language="text")
+                else:
+                    st.warning(f"Sandbox run unavailable: {sr.error}")
+            else:
+                st.caption("Sandbox verification was not enabled for this run. Enable 'Verify in sandbox' in the sidebar.")
+
+            st.divider()
+            st.markdown("##### 🧪 Auto-Generated Test Cases")
+            if result.test_suite:
+                ts = result.test_suite
+                if ts.cases:
+                    status_text = "🟢 All tests passed" if ts.all_passed else "⚠️ Some tests failed or need review"
+                    st.markdown(f"**Status:** {status_text} ({len(ts.cases)} test cases generated)")
+                    for case in ts.cases:
+                        case_badge = "✅ Passed" if case.passed else "⚠️ Needs Review"
+                        with st.expander(f"{case.name} — {case_badge}"):
+                            if case.description:
+                                st.caption(case.description)
+                            st.code(case.code, language="python")
+                            if case.output:
+                                st.text(f"Output: {case.output}")
+                elif ts.error:
+                    st.warning(f"Test generation info: {ts.error}")
+            else:
+                st.caption("No unit tests generated. Enable 'Generate test cases (Groq)' in the sidebar.")
+
         with tab_trace:
             icon = {"ok": "✅", "warn": "⚠️", "fail": "❌", "info": "ℹ️"}
             for step in result.trace:
                 st.markdown(f"{icon.get(step.status, '•')} **{step.name}** — {step.detail}")
+
+        # ------------------------------------------------ Ship it Section --
+        st.divider()
+        with st.expander("🚀 Ship it — Open GitHub Pull Request", expanded=False):
+            st.caption("Directly commit the fixed code to a new branch and open a PR back to the default branch.")
+            c_repo, c_tok = st.columns([1, 1])
+            with c_repo:
+                repo_url = st.text_input(
+                    "GitHub Repository URL or owner/repo",
+                    value=st.session_state.github_repo,
+                    placeholder="https://github.com/apugazh61-debug/fixmate-Ai",
+                )
+            with c_tok:
+                token_input = st.text_input(
+                    "Personal Access Token",
+                    type="password",
+                    value=st.session_state.github_token,
+                    help="GitHub PAT with 'repo' permissions. Never logged or saved to disk.",
+                )
+
+            file_path_input = st.text_input(
+                "Target file path in repository",
+                value="fixed_code.py",
+                help="Path where the fixed code will be committed in the new branch.",
+            )
+
+            pr_button_disabled = not result.verified
+            pr_button_help = "" if result.verified else "Fix must be verified before opening a Pull Request."
+            if st.button("🚀 Open Pull Request", type="primary", disabled=pr_button_disabled, help=pr_button_help, use_container_width=True):
+                st.session_state.github_repo = repo_url
+                st.session_state.github_token = token_input
+                with st.spinner("Creating branch, committing file, and opening PR on GitHub..."):
+                    pr_result = github_integration.create_pull_request(
+                        repo_input=repo_url,
+                        token=token_input,
+                        file_path=file_path_input,
+                        fixed_code=result.fixed_code,
+                        explanation=result.explanation,
+                        trace=result.trace,
+                    )
+                    st.session_state.pr_result = pr_result
+
+            if st.session_state.pr_result:
+                pr_res = st.session_state.pr_result
+                if pr_res.success:
+                    st.success(f"🎉 Pull Request created successfully! [#{pr_res.pr_number} — View on GitHub]({pr_res.pr_url}) on branch `{pr_res.branch_name}`")
+                else:
+                    st.error(f"❌ Failed to create Pull Request: {pr_res.error}")
 
 
 if "last_result" in st.session_state:

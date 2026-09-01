@@ -4,13 +4,14 @@ This actually runs the script, sets widget values, clicks the button,
 and checks the rendered output — not just "does the server respond".
 """
 import sys
+from pathlib import Path
 from streamlit.testing.v1 import AppTest
 
-sys.path.insert(0, "/home/claude/fixmate_ai")
+APP_PATH = str(Path(__file__).parent / "app.py")
 
 
 def run_case(code: str, label: str, expect_verified: bool = True):
-    at = AppTest.from_file("/home/claude/fixmate_ai/app.py")
+    at = AppTest.from_file(APP_PATH)
     at.run(timeout=30)
     assert not at.exception, f"[{label}] exception on initial load: {at.exception}"
 

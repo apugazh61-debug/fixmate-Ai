@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 
 class ErrorType(str, Enum):
@@ -57,3 +58,5 @@ class AnalysisResult:
     attempts: int
     trace: list[PipelineStep] = field(default_factory=list)
     source: str = "local_engine"
+    sandbox_result: Any = None  # VerificationResult | None
+    test_suite: Any = None      # TestSuiteResult | None
